@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Расписание Ивентов</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <div class="page-wrapper">
+    <div class="top-bar">
+        <div class="brand-block">
+            <h1>Расписание comeback 1.4.6</h1>
+            <div class="author-tag">by murasame</div>
+        </div>
+
+        <div class="countdown-block">
+            <div class="countdown-label"><a id="next-event-name" href="#" class="next-event-link">--</a></div>
+            <div id="countdown-timer" class="countdown-time">00:00:00</div>
+        </div>
+
+        <div class="controls-block">
+            <div class="timezone-wrapper">
+                <select id="tz-select" class="timezone-select">
+                    <option value="2">UTC+2</option>
+                    <option value="3" selected>UTC+3</option>
+                    <option value="4">UTC+4</option>
+                    <option value="5">UTC+5</option>
+                    <option value="6">UTC+6</option>
+                    <option value="7">UTC+7</option>
+                    <option value="8">UTC+8</option>
+                    <option value="9">UTC+9</option>
+                    <option value="10">UTC+10</option>
+                </select>
+                <span id="calculated-zone-time" class="pc-time-display">--:--</span>
+            </div>
+            <button id="theme-toggle" class="theme-btn" title="Сменить тему">🌙</button>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="timeline-container">
+            <div class="timeline-track">
+                <div id="timeline-progress" class="timeline-progress-bar"></div>
+                <div id="timeline-marker" class="timeline-target-marker" data-label="Ждем"></div>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <table id="events-table">
+                <thead>
+                    <tr>
+                        <th>Ивент</th>
+                        <th>Пн</th><th>Вт</th><th>Ср</th><th>Чт</th><th>Пт</th><th>Сб</th><th>Вс</th>
+                        <th>Награда</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    </tbody>
+            </table>
+        </div>
+    </div>
+    </div>
+
+   <script>
+    let eventsJSON = [];
+
+    const daysMapping = [1, 2, 3, 4, 5, 6, 7];
+    const BASE_UTC_OFFSET = 3; // База расписания (Москва)
+
+    // Тоггл темы
+    const themeBtn = document.getElementById('theme-toggle');
+    let currentTheme = localStorage.getItem('theme') || 'dark';
+    document.documentElement.setAttribute('theme', currentTheme);
+    themeBtn.innerText = currentTheme === 'dark' ? '🌙' : '☀️';
+
+    themeBtn.addEventListener('click', () => {
+        currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('theme', currentTheme);
+        themeBtn.innerText = currentTheme === 'dark' ? '🌙' : '☀️';
+        localStorage.setItem('theme', currentTheme);
+    });
+
+    // Функция расчета и вывода текущего времени для ВЫБРАННОГО часового пояса
+    function updateCalculatedZoneTime() {
+        const select = document.getElementById('tz-select');
+        if (!select) return;
+        
+        const selectedOffset = parseInt(select.value);
+        const selectedText = select.options[select.selectedIndex].text; // Получаем текст (например, "Москва (UTC+3)")
+        
+        const now = new Date();
+        // Получаем точное UTC время на данный момент
+        const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+        // Сдвигаем на выбранный в селекторе пояс
+        const zoneTime = new Date(utcTime + (3600000 * selectedOffset));
+
+        const pad = (num) => String(num).padStart(2, '0');
+        
+        // Выводим подсказку: время выбранного региона, чтобы пользователь мог свериться со своими настенными часами
+        document.getElementById('calculated-zone-time').innerText = `${selectedText}: ${pad(zoneTime.getHours())}:${pad(zoneTime.getMinutes())}`;
+    }
+
+    function getShiftedTime(timeStr, originDay, targetUtcOffset) {
+        const [hours, minutes] = timeStr.split(':').map(Number);
+        const offsetDiff = targetUtcOffset - BASE_UTC_OFFSET;
+
+        let newHours = hours + offsetDiff;
+        let newDay = originDay;
+
+        while (newHours >= 24) { newHours -= 24; newDay = newDay === 7 ? 1 : newDay + 1; }
+        while (newHours < 0) { newHours += 24; newDay = newDay === 1 ? 7 : newDay - 1; }
+
+        const pad = (num) => String(num).padStart(2, '0');
+        return { time: `${pad(newHours)}:${pad(minutes)}`, day: newDay };
+    }
+
+    function buildTimeCellHTML(timesArray) {
+        if (!timesArray || timesArray.length === 0) return '';
+        let html = '<div class="time-cells-wrapper">';
+        timesArray.forEach(t => { html += `<span class="time-tag">${t}</span>`; });
+        html += '</div>';
+        return html;
+    }
+
+    function renderTable() {
+        // Если данные еще не загрузились из data.json, прерываем выполнение
+        if (!eventsJSON || eventsJSON.length === 0) return;
+
+        const tbody = document.querySelector('#events-table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        
+        const selectedOffset = parseInt(document.getElementById('tz-select').value);
+
+        eventsJSON.forEach(event => {
+            const tr = document.createElement('tr');
+            tr.setAttribute('data-event-id', event.id);
+            tr.innerHTML += `<td class="event-name-cell"><a class="table-event-link" href="${event.url}">${event.name}</a></td>`;
+
+            const convertedDays = {1:[], 2:[], 3:[], 4:[], 5:[], 6:[], 7:[]};
+
+            for (let dayStr in event.days) {
+                const originDay = parseInt(dayStr);
+                event.days[originDay].forEach(timeRange => {
+                    const [start, end] = timeRange.split('-');
+                    const startConv = getShiftedTime(start, originDay, selectedOffset);
+                    let displayStr = startConv.time;
+                    // Показываем время окончания всегда, если оно указано —
+                    // ранее показывали только при разнице часов > 1
+                    if (end) {
+                        const endConv = getShiftedTime(end, originDay, selectedOffset);
+                        displayStr += `-${endConv.time}`;
+                    }
+                    convertedDays[startConv.day].push(displayStr);
+                });
+            }
+
+            daysMapping.forEach(day => {
+                const times = convertedDays[day];
+                tr.innerHTML += `<td class="time-cell" data-day="${day}">${buildTimeCellHTML(times)}</td>`;
+            });
+
+            let rewardHTML = '<div class="reward-container">';
+            if (Array.isArray(event.reward)) {
+                event.reward.forEach(rew => {
+                    if (typeof rew === 'string') {
+                        rewardHTML += `<a href="${event.url}"><img src="${rew}" class="reward-icon"></a>`;
+                    } else if (rew && rew.img) {
+                        const href = rew.url_guide || rew.url || rew.link || event.url;
+                        rewardHTML += `<a href="${href}"><img src="${rew.img}" class="reward-icon"></a>`;
+                    }
+                });
+            } else {
+                const isSpecReward = event.reward !== 'Отсутствует';
+                rewardHTML += `<span class="reward-badge ${isSpecReward ? 'active' : ''}">${event.reward}</span>`;
+            }
+            rewardHTML += '</div>';
+            tr.innerHTML += `<td>${rewardHTML}</td>`;
+            tbody.appendChild(tr);
+        });
+        
+    }
+
+
+    function updateScheduler() {
+        updateCalculatedZoneTime(); // Обновляем расчётные часы
+
+        // Если данные еще не подгрузились, не ломаем скрипт расчетами
+        if (!eventsJSON || eventsJSON.length === 0) return;
+
+        const now = new Date();
+        const currentUtcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+        const mskNow = new Date(currentUtcTime + (3600000 * BASE_UTC_OFFSET));
+        
+        let mskDay = mskNow.getDay() === 0 ? 7 : mskNow.getDay();
+        const selectedOffset = parseInt(document.getElementById('tz-select').value);
+
+        let closestEvent = null;
+        let minDiff = Infinity;
+        let liveRowElements = [];
+
+        document.querySelectorAll('tr.event-live').forEach(el => el.classList.remove('event-live'));
+        document.querySelectorAll('.next-cell-time').forEach(el => el.classList.remove('next-cell-time'));
+        document.querySelectorAll('.live-cell-time').forEach(el => el.classList.remove('live-cell-time'));
+
+        eventsJSON.forEach(event => {
+            let isLiveNow = false;
+            let currentEventLiveDay = null;
+
+            for (let dayStr in event.days) {
+                const day = parseInt(dayStr);
+                
+                event.days[day].forEach(timeRange => {
+                    const [startStr, endStr] = timeRange.split('-');
+                    const [sHours, sMinutes] = startStr.split(':').map(Number);
+                    const [eHours, eMinutes] = endStr ? endStr.split(':').map(Number) : [sHours + 1, sMinutes];
+
+                    let dayDiffStart = day - mskDay;
+                    if (dayDiffStart < 0) dayDiffStart += 7;
+
+                    const startDateMSK = new Date(mskNow);
+                    startDateMSK.setDate(mskNow.getDate() + dayDiffStart);
+                    startDateMSK.setHours(sHours, sMinutes, 0, 0);
+
+                    const endDateMSK = new Date(startDateMSK);
+                    endDateMSK.setHours(eHours, eMinutes, 0, 0);
+                    if (endDateMSK < startDateMSK) endDateMSK.setDate(endDateMSK.getDate() + 1);
+
+                    if (day === mskDay && mskNow >= startDateMSK && mskNow <= endDateMSK) {
+                        isLiveNow = true;
+                        const localConv = getShiftedTime(startStr, day, selectedOffset);
+                        currentEventLiveDay = localConv.day;
+                    }
+
+                    let diffTargetMSK = new Date(startDateMSK);
+                    if (startDateMSK <= mskNow) {
+                        diffTargetMSK.setDate(diffTargetMSK.getDate() + 7);
+                    }
+
+                    const diff = diffTargetMSK - mskNow;
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        const localConv = getShiftedTime(startStr, day, selectedOffset);
+                        closestEvent = { id: event.id, name: event.name, url: event.url, day: localConv.day, msLeft: diff };
+                    }
+                });
+            }
+
+            if (isLiveNow) {
+                const row = document.querySelector(`tr[data-event-id="${event.id}"]`);
+                if (row) {
+                    row.classList.add('event-live');
+                    liveRowElements.push(row);
+                    
+                    const liveCell = row.querySelector(`td[data-day="${currentEventLiveDay}"]`);
+                    if (liveCell) liveCell.classList.add('live-cell-time');
+                }
+            }
+        });
+
+        let targetRowElement = null;
+        let statusLabel = "СЛЕД.";
+
+        if (liveRowElements.length > 0) {
+            targetRowElement = liveRowElements[0];
+            statusLabel = "ИДЕТ";
+        } else if (closestEvent) {
+            targetRowElement = document.querySelector(`tr[data-event-id="${closestEvent.id}"]`);
+            statusLabel = "СЛЕД.";
+        }
+
+        const progressBg = document.getElementById('timeline-progress');
+        const marker = document.getElementById('timeline-marker');
+        const track = document.querySelector('.timeline-track');
+        
+        if (track && marker && progressBg) {
+            const trackRect = track.getBoundingClientRect();
+
+            if (targetRowElement) {
+                const rowRect = targetRowElement.getBoundingClientRect();
+                const rowCenterY = (rowRect.top + rowRect.height / 2) - trackRect.top;
+
+                marker.style.top = `${rowCenterY}px`;
+                marker.setAttribute('data-label', statusLabel);
+                
+                if (statusLabel === "ИДЕТ") {
+                    marker.classList.add('live-status');
+                } else {
+                    marker.classList.remove('live-status');
+                }
+                
+                progressBg.style.height = `${rowCenterY}px`;
+            }
+        }
+
+        if (closestEvent) {
+            const nameElem = document.getElementById('next-event-name');
+            nameElem.innerText = closestEvent.name;
+            nameElem.href = closestEvent.url;
+
+            const timerElem = document.getElementById('countdown-timer');
+            const hours = Math.floor(closestEvent.msLeft / (1000 * 60 * 60));
+            const minutes = Math.floor((closestEvent.msLeft % (1000 * 60 * 60)) / (1000 * 60));
+            const seconds = Math.floor((closestEvent.msLeft % (1000 * 60)) / 1000);
+
+            const pad = (num) => String(num).padStart(2, '0');
+            timerElem.innerText = `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+
+            if (liveRowElements.length === 0 && targetRowElement) {
+                const targetCell = targetRowElement.querySelector(`td[data-day="${closestEvent.day}"]`);
+                if (targetCell) targetCell.classList.add('next-cell-time');
+            }
+        }
+    }
+
+    function autoDetectTimezone() {
+        const offsetHours = Math.round(-new Date().getTimezoneOffset() / 60);
+        const select = document.getElementById('tz-select');
+        for (let i = 0; i < select.options.length; i++) {
+            if (parseInt(select.options[i].value) === offsetHours) { select.selectedIndex = i; break; }
+        }
+    }
+
+    document.getElementById('tz-select').addEventListener('change', () => { renderTable(); updateScheduler(); });
+
+    // Первая инициализация часов (чтобы плашка не была пустой до загрузки JSON)
+    updateCalculatedZoneTime();
+
+    fetch('data.json')
+        .then(res => res.json())
+        .then(data => {
+            eventsJSON = data;
+            autoDetectTimezone();
+            renderTable();
+            updateScheduler();
+            setTimeout(updateScheduler, 200); 
+            setInterval(updateScheduler, 1000);
+            
+        })
+        .catch(err => { console.error('Failed to load data.json', err); });
+</script>
+</body>
+</html>
